@@ -57,6 +57,13 @@ fab-agon-emulator --firmware fb
 The `pingo` branch also includes a reproducible launcher for the
 Pingo-enabled native VDP. See [Pingo development](./docs/pingo.md).
 
+From anywhere on this development machine, rebuild the Pingo VDP and launch
+the default visual fixture with:
+
+```sh
+/home/smith/Agon/mystuff/fab-agon-emulator/scripts/run-pingo --rebuild
+```
+
 ## The Z80 debugger
 
 Start the emulator with the `-d` or `--debugger` option to enable the Z80

@@ -12,6 +12,15 @@ The repositories have distinct responsibilities:
 No generated firmware, sample binary, or private SD-card tree is committed to
 this repository.
 
+## Quick start
+
+From anywhere on this development machine, rebuild the native Pingo VDP,
+smoke-test it, and launch the default `moveobj/tri` visual fixture:
+
+```sh
+/home/smith/Agon/mystuff/fab-agon-emulator/scripts/run-pingo --rebuild
+```
+
 ## Recorded integration baseline
 
 The durable workflow was established on 2026-07-26:
