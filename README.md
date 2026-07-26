@@ -61,7 +61,7 @@ From anywhere on this development machine, rebuild the Pingo VDP and launch
 the default visual fixture with:
 
 ```sh
-/home/smith/Agon/mystuff/fab-agon-emulator/scripts/run-pingo --rebuild
+~/Agon/mystuff/fab-agon-emulator/scripts/run-pingo --rebuild
 ```
 
 ## The Z80 debugger

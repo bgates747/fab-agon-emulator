@@ -18,7 +18,7 @@ From anywhere on this development machine, rebuild the native Pingo VDP,
 smoke-test it, and launch the default `moveobj/tri` visual fixture:
 
 ```sh
-/home/smith/Agon/mystuff/fab-agon-emulator/scripts/run-pingo --rebuild
+~/Agon/mystuff/fab-agon-emulator/scripts/run-pingo --rebuild
 ```
 
 ## Recorded integration baseline
