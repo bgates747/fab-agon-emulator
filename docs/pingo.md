@@ -76,6 +76,26 @@ LIBRARY_PATH="$HOME/.local/lib${LIBRARY_PATH:+:$LIBRARY_PATH}" \
 The Pingo launcher automatically adds an existing `~/.local/lib` SDL3
 installation to the runtime library search path.
 
+### Blender tooling
+
+Pingo asset work uses the native Blender package from the Pop!_OS/Ubuntu
+repository, not Flatpak:
+
+```sh
+sudo apt-get install blender
+```
+
+The validated installation is Blender 4.0.2. Its ordinary headless Python
+interface is directly available on `PATH`:
+
+```sh
+blender --background --python script.py
+```
+
+A background Python smoke test successfully rendered a PNG through Blender's
+surfaceless EGL fallback. PulseAudio or initial EGL diagnostics may appear in
+a restricted headless session without indicating render failure.
+
 The registered `pingo-v2.16-userspace` worktree lives permanently beside
 this checkout. Build its native module directly or use the helpers below:
 
