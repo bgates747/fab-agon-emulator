@@ -11,7 +11,8 @@ $PINGOASM_ROOT/src/asm.
 
 Environment:
   FAB_EMULATOR_BIN  Fab executable (default: target/release/fab-agon-emulator)
-  PINGO_VDP_ROOT    Pingo agon-vdp checkout/worktree (default: ../agon-vdp)
+  PINGO_VDP_ROOT    Pingo userspace worktree
+                    (default: ../agon-vdp-pingo-v216-userspace)
   PINGO_VDP_SO      Pingo VDP shared object
   PINGOASM_ROOT     pingoasm checkout (default: ../pingoasm)
   KEEP_PINGO_SD     Set to 1 to retain the temporary SD card after exit
@@ -63,7 +64,8 @@ if [[ "$fixture_group" == "$fixture" ]]; then
 fi
 
 fab_bin="${FAB_EMULATOR_BIN:-$fab_root/target/release/fab-agon-emulator}"
-pingo_vdp_root="${PINGO_VDP_ROOT:-$projects_root/agon-vdp}"
+default_pingo_vdp_root="$projects_root/agon-vdp-pingo-v216-userspace"
+pingo_vdp_root="${PINGO_VDP_ROOT:-$default_pingo_vdp_root}"
 pingoasm_root="${PINGOASM_ROOT:-$projects_root/pingoasm}"
 fixture_dir="$pingoasm_root/src/asm/$fixture_group"
 program_bin="$fixture_dir/$program.bin"

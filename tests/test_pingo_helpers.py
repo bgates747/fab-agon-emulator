@@ -50,7 +50,10 @@ class ProjectPathsTests(unittest.TestCase):
             fab = projects / "fab-agon-emulator"
             with patch.dict(os.environ, {}, clear=True):
                 paths = ProjectPaths.discover(fab_root=fab)
-            self.assertEqual(paths.vdp_root, (projects / "agon-vdp").resolve())
+            self.assertEqual(
+                paths.vdp_root,
+                (projects / "agon-vdp-pingo-v216-userspace").resolve(),
+            )
             self.assertEqual(
                 paths.pingoasm_root, (projects / "pingoasm").resolve()
             )

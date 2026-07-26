@@ -42,7 +42,8 @@ The expected sibling layout is:
 
 ```text
 ~/Agon/mystuff/
-  agon-vdp/
+  agon-vdp/                         historical/reconstruction checkout
+  agon-vdp-pingo-v216-userspace/    native Pingo VDP worktree
   fab-agon-emulator/
   pingoasm/
 ```
@@ -65,17 +66,18 @@ LIBRARY_PATH="$HOME/.local/lib${LIBRARY_PATH:+:$LIBRARY_PATH}" \
 The Pingo launcher automatically adds an existing `~/.local/lib` SDL3
 installation to the runtime library search path.
 
-Check out `pingo-v2.16-userspace` in `agon-vdp` and build its native module:
+The registered `pingo-v2.16-userspace` worktree lives permanently beside
+this checkout. Build its native module directly or use the helpers below:
 
 ```sh
-make -C ../agon-vdp/userspace FAB_ROOT="$PWD"
-make -C ../agon-vdp/userspace FAB_ROOT="$PWD" smoke
+make -C ../agon-vdp-pingo-v216-userspace/userspace FAB_ROOT="$PWD"
+make -C ../agon-vdp-pingo-v216-userspace/userspace FAB_ROOT="$PWD" smoke
 ```
 
 The expected module is:
 
 ```text
-../agon-vdp/video/build/userspace/vdp_pingo.so
+../agon-vdp-pingo-v216-userspace/video/build/userspace/vdp_pingo.so
 ```
 
 ## Run a sample
@@ -156,7 +158,9 @@ edit agon-vdp
 All Python helpers use only the Python 3 standard library. They accept
 `--fab-root`, `--vdp-root`, and `--pingoasm-root` where cross-repository paths
 are relevant. The matching environment variables are `FAB_ROOT`,
-`PINGO_VDP_ROOT`, and `PINGOASM_ROOT`.
+`PINGO_VDP_ROOT`, and `PINGOASM_ROOT`. Without overrides, the VDP helpers use
+the permanent sibling worktree
+`../agon-vdp-pingo-v216-userspace`.
 
 ### Build the native VDP
 
@@ -164,7 +168,7 @@ are relevant. The matching environment variables are `FAB_ROOT`,
 scripts/build-pingo-vdp.py
 ```
 
-This invokes the native Makefile in `agon-vdp/userspace`, runs its ABI and
+This invokes the native Makefile in the userspace worktree, runs its ABI and
 empty-render smoke test, and reports the resulting module's path, size, and
 SHA-256 identity. Useful options:
 

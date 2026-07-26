@@ -40,7 +40,7 @@ class ProjectPaths:
             vdp_root=_resolve_path(
                 vdp_root
                 or os.environ.get("PINGO_VDP_ROOT")
-                or projects_root / "agon-vdp"
+                or projects_root / "agon-vdp-pingo-v216-userspace"
             ),
             pingoasm_root=_resolve_path(
                 pingoasm_root
@@ -189,7 +189,10 @@ def add_path_arguments(parser: Any) -> None:
     )
     parser.add_argument(
         "--vdp-root",
-        help="Pingo agon-vdp checkout/worktree (default: PINGO_VDP_ROOT or sibling)",
+        help=(
+            "Pingo agon-vdp userspace worktree "
+            "(default: PINGO_VDP_ROOT or permanent sibling)"
+        ),
     )
     parser.add_argument(
         "--pingoasm-root",
