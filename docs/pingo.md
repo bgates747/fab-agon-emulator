@@ -140,7 +140,7 @@ The matching physical-hardware test had the same visual result. This is a
 human visual acceptance result rather than pixel-exact final-scanout
 comparison.
 
-## Intended helper layer
+## Helper commands
 
 This repository is the orchestration layer for the Pingo development loop:
 
@@ -152,19 +152,117 @@ edit agon-vdp
   -> capture or review the result
 ```
 
-The next helpers should remain thin wrappers around commands owned by the
-component repositories:
+All Python helpers use only the Python 3 standard library. They accept
+`--fab-root`, `--vdp-root`, and `--pingoasm-root` where cross-repository paths
+are relevant. The matching environment variables are `FAB_ROOT`,
+`PINGO_VDP_ROOT`, and `PINGOASM_ROOT`.
 
-- `build-pingo-vdp`: build the module, run its ABI smoke test, and report its
-  identity;
-- `test-pingo`: execute the accepted fixture set and compare deterministic
-  captures;
-- `pingo-status`: report commits, dirty trees, submodule pins, and artifact
-  hashes across the three checkouts;
-- `update-upstream`: report or apply emulator-upstream updates without
-  silently changing `agon-vdp` or `pingoasm`;
-- a `--rebuild` mode for `run-pingo` to provide the everyday
-  edit-build-run-test command.
+### Build the native VDP
+
+```sh
+scripts/build-pingo-vdp.py
+```
+
+This invokes the native Makefile in `agon-vdp/userspace`, runs its ABI and
+empty-render smoke test, and reports the resulting module's path, size, and
+SHA-256 identity. Useful options:
+
+```sh
+scripts/build-pingo-vdp.py --clean
+scripts/build-pingo-vdp.py --no-smoke
+scripts/build-pingo-vdp.py --vdp-root /path/to/userspace-worktree
+```
+
+`--clean` removes only products owned by the native VDP Makefile.
+
+### Everyday interactive loop
+
+Build, smoke-test, and launch the default triangle fixture:
+
+```sh
+scripts/run-pingo --rebuild
+```
+
+Select another fixture:
+
+```sh
+scripts/run-pingo --rebuild moveair/jet
+```
+
+When `PINGO_VDP_SO` overrides the module path, `--rebuild` also requires
+`PINGO_VDP_ROOT` so the launcher cannot rebuild one checkout and accidentally
+run a module from another.
+
+### Deterministic regressions
+
+Run all accepted fixtures, each in a fresh headless Fab process:
+
+```sh
+scripts/test-pingo.py
+```
+
+Run only one fixture or rebuild first:
+
+```sh
+scripts/test-pingo.py moveobj/tri
+scripts/test-pingo.py --rebuild
+```
+
+The accepted frame-1 oracles are:
+
+| Fixture | Dimensions | Bytes | SHA-256 |
+| --- | ---: | ---: | --- |
+| `moveobj/tri` | 320x240 | 76,800 | `f81dd66876ef012a6f1e52bae2821c275f1cf33e9a7e977c193be93bad4b4958` |
+| `moveair/jet` | 320x148 | 47,360 | `768f07b8115df6391d9a0a1611adf9e293a96740a4962d049788c15777ecdd5e` |
+
+Use `--keep-captures DIRECTORY` to retain successful `.rgba2`, `.ppm`,
+metadata, and emulator logs. Failed runs retain their diagnostic directory
+automatically. These hashes validate Pingo's render target, not Fab's final
+composited scanout.
+
+### Report exact state
+
+```sh
+scripts/pingo-status.py
+scripts/pingo-status.py --json
+scripts/pingo-status.py --strict
+```
+
+The report includes branch, commit, upstream divergence, dirty files, and
+artifact hashes for Fab, `agon-vdp`, `pingoasm`, the emulator executable, the
+native Pingo module, and the two accepted client binaries. `--strict` returns
+nonzero if a repository is dirty or an expected artifact is missing; ordinary
+status reporting remains informative and returns success.
+
+### Inspect or incorporate Fab upstream
+
+Read the locally recorded divergence:
+
+```sh
+scripts/update-upstream.py
+```
+
+Refresh `upstream/*` remote-tracking refs and report again:
+
+```sh
+scripts/update-upstream.py --fetch
+```
+
+Explicitly merge `upstream/main` into the current clean branch:
+
+```sh
+scripts/update-upstream.py --merge
+```
+
+The default command is read-only. `--fetch` changes only remote-tracking
+metadata. `--merge` refuses a dirty working tree, performs a local merge, and
+does not push. The helper never changes `agon-vdp` or `pingoasm`.
+
+### Test the helpers
+
+```sh
+python3 -m unittest discover -s tests -v
+```
 
 The VDP library is loaded for the lifetime of the Fab process. Updating it
 therefore requires a rebuild and emulator restart; this is not an in-process

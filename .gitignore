@@ -1,4 +1,6 @@
 /target
+__pycache__/
+*.pyc
 src/vdp/*.o
 src/vdp/*.so
 .DS_Store

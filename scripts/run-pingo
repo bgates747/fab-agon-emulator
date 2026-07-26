@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-Usage: scripts/run-pingo [fixture]
+Usage: scripts/run-pingo [--rebuild] [fixture] [Fab options...]
 
 Launch Fab with a Pingo-enabled native VDP and a disposable SD card.
 The fixture defaults to moveobj/tri and is resolved below
@@ -11,22 +11,35 @@ $PINGOASM_ROOT/src/asm.
 
 Environment:
   FAB_EMULATOR_BIN  Fab executable (default: target/release/fab-agon-emulator)
+  PINGO_VDP_ROOT    Pingo agon-vdp checkout/worktree (default: ../agon-vdp)
   PINGO_VDP_SO      Pingo VDP shared object
   PINGOASM_ROOT     pingoasm checkout (default: ../pingoasm)
   KEEP_PINGO_SD     Set to 1 to retain the temporary SD card after exit
   SDL_VIDEODRIVER  SDL video driver (default: wayland when WAYLAND_DISPLAY is set)
   SDL_AUDIODRIVER  SDL audio driver (default: dummy)
 
+--rebuild builds and smoke-tests the native VDP before launching. When
+PINGO_VDP_SO is set, PINGO_VDP_ROOT must also identify its source worktree.
 Any arguments after the fixture are passed to Fab.
 EOF
 }
 
-case "${1:-}" in
-    -h|--help)
-        usage
-        exit 0
-        ;;
-esac
+rebuild=0
+while (($#)); do
+    case "$1" in
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        --rebuild)
+            rebuild=1
+            shift
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 fab_root="$(cd -- "$script_dir/.." && pwd)"
@@ -50,13 +63,28 @@ if [[ "$fixture_group" == "$fixture" ]]; then
 fi
 
 fab_bin="${FAB_EMULATOR_BIN:-$fab_root/target/release/fab-agon-emulator}"
+pingo_vdp_root="${PINGO_VDP_ROOT:-$projects_root/agon-vdp}"
 pingoasm_root="${PINGOASM_ROOT:-$projects_root/pingoasm}"
 fixture_dir="$pingoasm_root/src/asm/$fixture_group"
 program_bin="$fixture_dir/$program.bin"
 mos_bin="$fab_root/firmware/mos_console8.bin"
 
+if ((rebuild)) && [[ -n "${PINGO_VDP_SO:-}" && -z "${PINGO_VDP_ROOT:-}" ]]; then
+    printf '%s\n' \
+        'PINGO_VDP_ROOT is required with --rebuild when PINGO_VDP_SO is set.' \
+        >&2
+    exit 2
+fi
+
+if ((rebuild)); then
+    python3 "$script_dir/build-pingo-vdp.py" \
+        --fab-root "$fab_root" \
+        --vdp-root "$pingo_vdp_root" \
+        --pingoasm-root "$pingoasm_root"
+fi
+
 if [[ -z "${PINGO_VDP_SO:-}" ]]; then
-    pingo_vdp_so="$projects_root/agon-vdp/video/build/userspace/vdp_pingo.so"
+    pingo_vdp_so="$pingo_vdp_root/video/build/userspace/vdp_pingo.so"
 else
     pingo_vdp_so="$PINGO_VDP_SO"
 fi
