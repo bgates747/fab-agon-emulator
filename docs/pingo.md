@@ -22,7 +22,8 @@ Fab upstream base
 
 Pingo integration
   branch pingo
-  commit 1b582ed38e57541ca902319e42fe28677800316b
+  launcher 1b582ed38e57541ca902319e42fe28677800316b
+  helpers  654ded9
 
 Pingo userspace VDP
   agon-vdp branch pingo-v2.16-userspace
