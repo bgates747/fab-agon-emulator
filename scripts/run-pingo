@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+Usage: scripts/run-pingo [fixture]
+
+Launch Fab with a Pingo-enabled native VDP and a disposable SD card.
+The fixture defaults to moveobj/tri and is resolved below
+$PINGOASM_ROOT/src/asm.
+
+Environment:
+  FAB_EMULATOR_BIN  Fab executable (default: target/release/fab-agon-emulator)
+  PINGO_VDP_SO      Pingo VDP shared object
+  PINGOASM_ROOT     pingoasm checkout (default: ../pingoasm)
+  KEEP_PINGO_SD     Set to 1 to retain the temporary SD card after exit
+  SDL_VIDEODRIVER  SDL video driver (default: wayland when WAYLAND_DISPLAY is set)
+  SDL_AUDIODRIVER  SDL audio driver (default: dummy)
+
+Any arguments after the fixture are passed to Fab.
+EOF
+}
+
+case "${1:-}" in
+    -h|--help)
+        usage
+        exit 0
+        ;;
+esac
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+fab_root="$(cd -- "$script_dir/.." && pwd)"
+projects_root="$(cd -- "$fab_root/.." && pwd)"
+fixture="${1:-moveobj/tri}"
+if (($#)); then
+    shift
+fi
+
+case "$fixture" in
+    /*|*..*)
+        printf 'Invalid fixture path: %s\n' "$fixture" >&2
+        exit 2
+        ;;
+esac
+
+program="${fixture##*/}"
+fixture_group="${fixture%/*}"
+if [[ "$fixture_group" == "$fixture" ]]; then
+    fixture_group=.
+fi
+
+fab_bin="${FAB_EMULATOR_BIN:-$fab_root/target/release/fab-agon-emulator}"
+pingoasm_root="${PINGOASM_ROOT:-$projects_root/pingoasm}"
+fixture_dir="$pingoasm_root/src/asm/$fixture_group"
+program_bin="$fixture_dir/$program.bin"
+mos_bin="$fab_root/firmware/mos_console8.bin"
+
+if [[ -z "${PINGO_VDP_SO:-}" ]]; then
+    pingo_vdp_so="$projects_root/agon-vdp/video/build/userspace/vdp_pingo.so"
+else
+    pingo_vdp_so="$PINGO_VDP_SO"
+fi
+
+for required in "$fab_bin" "$pingo_vdp_so" "$program_bin" "$mos_bin"; do
+    if [[ ! -f "$required" ]]; then
+        printf 'Required file not found: %s\n' "$required" >&2
+        exit 1
+    fi
+done
+
+sd_root="$(mktemp -d "${TMPDIR:-/tmp}/fab-pingo-sd.XXXXXX")"
+cleanup() {
+    if [[ "${KEEP_PINGO_SD:-0}" == 1 ]]; then
+        printf 'Retained emulated SD card: %s\n' "$sd_root"
+    else
+        rm -rf -- "$sd_root"
+    fi
+}
+trap cleanup EXIT
+
+sd_fixture_dir="$sd_root/$fixture_group"
+mkdir -p -- "$sd_fixture_dir"
+
+# Samples keep their runtime package beside the executable. Copy data files,
+# but omit sources and other binaries so the selected program is unambiguous.
+find "$fixture_dir" -maxdepth 1 -type f \
+    ! -name '*.asm' \
+    ! -name '*.inc' \
+    ! -name '*.bak' \
+    ! -name '*.bin' \
+    -exec cp -- '{}' "$sd_fixture_dir/" ';'
+cp -- "$program_bin" "$sd_fixture_dir/"
+
+printf 'SET KEYBOARD 1\r\ncd /%s\r\nload %s.bin\r\nrun\r\n' \
+    "$fixture_group" "$program" >"$sd_root/autoexec.txt"
+
+if [[ -z "${SDL_VIDEODRIVER:-}" && -n "${WAYLAND_DISPLAY:-}" ]]; then
+    export SDL_VIDEODRIVER=wayland
+fi
+export SDL_AUDIODRIVER="${SDL_AUDIODRIVER:-dummy}"
+
+# A source-built SDL is commonly installed under the user's local prefix,
+# which is not necessarily in the dynamic loader's default search path.
+if [[ -f "${HOME}/.local/lib/libSDL3.so.0" ]]; then
+    export LD_LIBRARY_PATH="${HOME}/.local/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+fi
+
+printf 'Fab executable: %s\n' "$fab_bin"
+printf 'Pingo VDP:      %s\n' "$pingo_vdp_so"
+printf 'Fixture:       %s\n' "$fixture"
+printf 'Emulated SD:   %s\n' "$sd_root"
+
+cd -- "$(dirname -- "$pingo_vdp_so")"
+"$fab_bin" \
+    --renderer sw \
+    --firmware console8 \
+    --mos "$mos_bin" \
+    --vdp "$pingo_vdp_so" \
+    --sdcard "$sd_root" \
+    --verbose -z \
+    "$@"

@@ -54,6 +54,9 @@ Framebuffer Agon firmware:
 fab-agon-emulator --firmware fb
 ```
 
+The `pingo` branch also includes a reproducible launcher for the
+Pingo-enabled native VDP. See [Pingo development](./docs/pingo.md).
+
 ## The Z80 debugger
 
 Start the emulator with the `-d` or `--debugger` option to enable the Z80
