@@ -7,7 +7,8 @@ The repositories have distinct responsibilities:
 
 - `fab-agon-emulator` loads and runs a native VDP module;
 - `agon-vdp` builds the Pingo-enabled VDP module;
-- `pingoasm` supplies test programs and their runtime assets.
+- `pingoasm` owns test programs, runtime assets, Blender sources, and the
+  rendering/asset-pipeline scripts that produce them.
 
 No generated firmware, sample binary, or private SD-card tree is committed to
 this repository.
@@ -95,6 +96,10 @@ blender --background --python script.py
 A background Python smoke test successfully rendered a PNG through Blender's
 surfaceless EGL fallback. PulseAudio or initial EGL diagnostics may appear in
 a restricted headless session without indicating render failure.
+
+Blender and asset-conversion scripts live in `pingoasm`, not this emulator
+repository. See the
+[pingoasm rendering-pipeline guide](https://github.com/bgates747/pingoasm/blob/main/docs/rendering-pipeline.md).
 
 The registered `pingo-v2.16-userspace` worktree lives permanently beside
 this checkout. Build its native module directly or use the helpers below:
