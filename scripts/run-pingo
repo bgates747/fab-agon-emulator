@@ -3,11 +3,11 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-Usage: scripts/run-pingo [--rebuild] [fixture] [Fab options...]
+Usage: scripts/run-pingo [--rebuild] [--load-only] [fixture] [Fab options...]
 
 Launch Fab with a Pingo-enabled native VDP and a disposable SD card.
 The fixture defaults to moveobj/tri and is resolved below
-$PINGOASM_ROOT/src/asm.
+$PINGOASM_ROOT/apps/moveobj/tgt.
 
 Environment:
   FAB_EMULATOR_BIN  Fab executable (default: target/release/fab-agon-emulator)
@@ -21,11 +21,13 @@ Environment:
 
 --rebuild builds and smoke-tests the native VDP before launching. When
 PINGO_VDP_SO is set, PINGO_VDP_ROOT must also identify its source worktree.
+--load-only loads the selected binary but leaves it stopped at the MOS prompt.
 Any arguments after the fixture are passed to Fab.
 EOF
 }
 
 rebuild=0
+autorun=1
 while (($#)); do
     case "$1" in
         -h|--help)
@@ -34,6 +36,10 @@ while (($#)); do
             ;;
         --rebuild)
             rebuild=1
+            shift
+            ;;
+        --load-only)
+            autorun=0
             shift
             ;;
         *)
@@ -67,7 +73,7 @@ fab_bin="${FAB_EMULATOR_BIN:-$fab_root/target/release/fab-agon-emulator}"
 default_pingo_vdp_root="$projects_root/agon-vdp-pingo-v216-userspace"
 pingo_vdp_root="${PINGO_VDP_ROOT:-$default_pingo_vdp_root}"
 pingoasm_root="${PINGOASM_ROOT:-$projects_root/pingoasm}"
-fixture_dir="$pingoasm_root/src/asm/$fixture_group"
+fixture_dir="$pingoasm_root/apps/$fixture_group/tgt"
 program_bin="$fixture_dir/$program.bin"
 mos_bin="$fab_root/firmware/mos_console8.bin"
 
@@ -111,18 +117,18 @@ trap cleanup EXIT
 sd_fixture_dir="$sd_root/$fixture_group"
 mkdir -p -- "$sd_fixture_dir"
 
-# Samples keep their runtime package beside the executable. Copy data files,
-# but omit sources and other binaries so the selected program is unambiguous.
+# App target directories contain only runtime binaries and RGBA2 textures.
+# Copy the textures, then only the selected binary.
 find "$fixture_dir" -maxdepth 1 -type f \
-    ! -name '*.asm' \
-    ! -name '*.inc' \
-    ! -name '*.bak' \
     ! -name '*.bin' \
     -exec cp -- '{}' "$sd_fixture_dir/" ';'
 cp -- "$program_bin" "$sd_fixture_dir/"
 
-printf 'SET KEYBOARD 1\r\ncd /%s\r\nload %s.bin\r\nrun\r\n' \
+printf 'SET KEYBOARD 1\r\ncd /%s\r\nload %s.bin\r\n' \
     "$fixture_group" "$program" >"$sd_root/autoexec.txt"
+if ((autorun)); then
+    printf 'run\r\n' >>"$sd_root/autoexec.txt"
+fi
 
 if [[ -z "${SDL_VIDEODRIVER:-}" && -n "${WAYLAND_DISPLAY:-}" ]]; then
     export SDL_VIDEODRIVER=wayland

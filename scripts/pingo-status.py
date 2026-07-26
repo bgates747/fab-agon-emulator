@@ -36,7 +36,11 @@ def parse_arguments() -> argparse.Namespace:
 
 
 def fixture_artifact(root: Path, relative: str) -> dict[str, Any]:
-    result = artifact_status(root / "src/asm" / relative)
+    fixture = Path(relative)
+    if len(fixture.parts) != 2:
+        raise PingoToolError(f"Invalid Pingo fixture path: {relative}")
+    app_name, filename = fixture.parts
+    result = artifact_status(root / "apps" / app_name / "tgt" / filename)
     result["fixture"] = relative.removesuffix(".bin")
     return result
 

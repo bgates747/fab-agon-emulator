@@ -130,9 +130,10 @@ fixture. To launch another self-contained fixture:
 scripts/run-pingo moveair/jet
 ```
 
-The launcher creates a disposable SD card, copies the selected binary and
-the non-source files beside it, writes an `autoexec.txt` that loads and runs
-the sample, and removes the SD card when Fab exits.
+The launcher resolves fixtures such as `moveobj/tri` beneath
+`pingoasm/apps/moveobj/tgt`, creates a disposable SD card, copies the selected
+binary and its RGBA2 runtime assets, writes an `autoexec.txt` that loads and
+runs the sample, and removes the SD card when Fab exits.
 
 The paths can be overridden without editing the script:
 
