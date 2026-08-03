@@ -6,6 +6,13 @@ use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::sync::Arc;
 
+#[path = "headless.rs"]
+mod headless;
+pub use headless::{
+    DirectEntry, HeadlessBoot, HeadlessRunConfig, HeadlessRunError, HeadlessRunOutcome,
+    HeadlessSession, HeadlessSessionConfig, HeadlessStepOutcome, LoadImage, RunLimits, StopReason,
+};
+
 const ROM_SIZE: usize = 0x20000; // 128 KiB flash
 const ONCHIP_RAM_SIZE: u32 = 0x2000; // 8KiB
 
@@ -34,6 +41,8 @@ pub struct AgonMachine {
     soft_reset: Arc<std::sync::atomic::AtomicBool>,
     emulator_shutdown: Arc<std::sync::atomic::AtomicBool>,
     exit_status: Arc<std::sync::atomic::AtomicI32>,
+    guest_exit_status: Option<u8>,
+    headless_mode: bool,
     clockspeed_hz: u64,
     prt_timers: [prt_timer::PrtTimer; 6],
     gpios: Arc<gpio::GpioSet>,
@@ -471,10 +480,13 @@ impl Machine for AgonMachine {
                 // Discard high byte of address, so we can use `out (n),a`
                 // for debugging
                 if address & 0xff == 0 {
-                    println!(
-                        "Emulator shutdown triggered by writing 0x{:x} IO 0x0",
-                        value
-                    );
+                    if !self.headless_mode {
+                        println!(
+                            "Emulator shutdown triggered by writing 0x{:x} IO 0x0",
+                            value
+                        );
+                    }
+                    self.guest_exit_status = Some(value);
                     self.exit_status
                         .store(value as i32, std::sync::atomic::Ordering::Relaxed);
                     self.emulator_shutdown
@@ -526,6 +538,8 @@ impl AgonMachine {
             soft_reset: config.soft_reset,
             emulator_shutdown: config.emulator_shutdown,
             exit_status: config.exit_status,
+            guest_exit_status: None,
+            headless_mode: false,
             clockspeed_hz: config.clockspeed_hz,
             prt_timers: [
                 prt_timer::PrtTimer::new(),
@@ -666,6 +680,24 @@ impl AgonMachine {
                     e
                 );
                 self.enable_hostfs = false;
+            }
+        }
+    }
+
+    fn initialize_ram(&mut self) {
+        match self.ram_init {
+            RamInit::Random => {
+                for value in &mut self.mem_external {
+                    *value = rand::thread_rng().gen_range(0..=255);
+                }
+
+                for value in &mut self.mem_internal {
+                    *value = rand::thread_rng().gen_range(0..=255);
+                }
+            }
+            RamInit::Zero => {
+                self.mem_external.fill(0);
+                self.mem_internal.fill(0);
             }
         }
     }
@@ -1627,18 +1659,7 @@ impl AgonMachine {
             None
         };
 
-        match self.ram_init {
-            RamInit::Random => {
-                for i in 0..self.mem_external.len() {
-                    self.mem_external[i as usize] = rand::thread_rng().gen_range(0..=255);
-                }
-
-                for i in 0..ONCHIP_RAM_SIZE {
-                    self.mem_internal[i as usize] = rand::thread_rng().gen_range(0..=255);
-                }
-            }
-            RamInit::Zero => {}
-        }
+        self.initialize_ram();
 
         self.load_mos();
 
