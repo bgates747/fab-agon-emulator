@@ -67,6 +67,30 @@ pub struct HeadlessStepOutcome {
     pub cycles: u64,
 }
 
+/// Why [`HeadlessSession::advance_to_boundary`] returned control.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeadlessBoundaryCause {
+    /// One instruction and its ordinary post-instruction interrupt check have
+    /// settled. The observed PC is the next executable boundary.
+    SettledInstruction,
+    /// An `OUT` to the debugger checkpoint range `$10` through `$2f` has
+    /// settled, before any pending interrupt is accepted.
+    DebugPort(u8),
+    /// An interrupt deferred by a preceding debug-port boundary was accepted.
+    /// No interrupt-handler instruction has executed yet.
+    InterruptAccepted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeadlessBoundaryOutcome {
+    pub cause: HeadlessBoundaryCause,
+    pub reason: Option<StopReason>,
+    pub guest_status: Option<u8>,
+    pub pc: u32,
+    pub instructions: u64,
+    pub cycles: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HeadlessRunOutcome {
     pub reason: StopReason,
@@ -273,6 +297,7 @@ pub struct HeadlessSession {
     machine: AgonMachine,
     cpu: Cpu,
     terminal_stop: Option<StopReason>,
+    deferred_interrupt_after_debug: bool,
 }
 
 pub(crate) struct SettledInstruction {
@@ -327,6 +352,7 @@ impl AgonMachine {
             machine: self,
             cpu,
             terminal_stop: None,
+            deferred_interrupt_after_debug: false,
         })
     }
 
@@ -413,6 +439,60 @@ impl AgonMachine {
         Ok(all_targets)
     }
 
+    fn validate_write_window(
+        &self,
+        address: u32,
+        len: usize,
+    ) -> Result<Vec<StorageAddress>, HeadlessRunError> {
+        const IMAGE: usize = 0;
+        if len == 0 {
+            return Err(HeadlessRunError::EmptyImage { image: IMAGE });
+        }
+        if address > MAX_ADDRESS {
+            return Err(HeadlessRunError::AddressOutOfRange {
+                image: IMAGE,
+                address,
+            });
+        }
+        let end = u64::from(address).checked_add(len as u64).ok_or(
+            HeadlessRunError::RangeOutOfRange {
+                image: IMAGE,
+                address,
+                len,
+            },
+        )?;
+        if end > ADDRESS_SPACE_SIZE {
+            return Err(HeadlessRunError::RangeOutOfRange {
+                image: IMAGE,
+                address,
+                len,
+            });
+        }
+
+        let mut targets = Vec::with_capacity(len);
+        for offset in 0..len {
+            let logical = address + offset as u32;
+            let target = self.writable_storage_address(IMAGE, logical)?;
+            if let Some(previous) = targets.last() {
+                let wrapped = match (*previous, target) {
+                    (StorageAddress::Internal(a), StorageAddress::Internal(b))
+                    | (StorageAddress::External(a), StorageAddress::External(b)) => {
+                        a.checked_add(1) != Some(b)
+                    }
+                    _ => false,
+                };
+                if wrapped {
+                    return Err(HeadlessRunError::PhysicalWrap {
+                        image: IMAGE,
+                        address: logical,
+                    });
+                }
+            }
+            targets.push(target);
+        }
+        Ok(targets)
+    }
+
     fn writable_storage_address(
         &self,
         image: usize,
@@ -445,21 +525,21 @@ impl AgonMachine {
     }
 
     pub(crate) fn execute_and_settle_instruction(&mut self, cpu: &mut Cpu) -> SettledInstruction {
+        let mut settled = self.execute_and_settle_instruction_only(cpu);
+        settled.interrupt_cycles = self.settle_interrupt(cpu);
+        settled.cycles_after = self.total_cycles_elapsed;
+        settled.memory_fault = self.mem_out_of_bounds.get();
+        debug_assert_eq!(self.cycle_counter.get(), 0);
+        settled
+    }
+
+    fn execute_and_settle_instruction_only(&mut self, cpu: &mut Cpu) -> SettledInstruction {
         self.mem_out_of_bounds.set(None);
         let instructions_before = cpu.state.instructions_executed;
         let cycles_before = self.total_cycles_elapsed;
         self.execute_instruction(cpu);
         let instructions_after = cpu.state.instructions_executed;
         let instruction_cycles = self.apply_elapsed_cycles();
-
-        if self.mem_out_of_bounds.get().is_none()
-            && self.guest_exit_status.is_none()
-            && !self.emulator_shutdown.load(Ordering::Relaxed)
-            && !cpu.is_halted()
-        {
-            self.do_interrupts(cpu);
-        }
-        let interrupt_cycles = self.apply_elapsed_cycles();
         let cycles_after = self.total_cycles_elapsed;
         debug_assert_eq!(self.cycle_counter.get(), 0);
 
@@ -469,9 +549,20 @@ impl AgonMachine {
             cycles_before,
             cycles_after,
             instruction_cycles,
-            interrupt_cycles,
+            interrupt_cycles: 0,
             memory_fault: self.mem_out_of_bounds.get(),
         }
+    }
+
+    fn settle_interrupt(&mut self, cpu: &mut Cpu) -> i32 {
+        if self.mem_out_of_bounds.get().is_none()
+            && self.guest_exit_status.is_none()
+            && !self.emulator_shutdown.load(Ordering::Relaxed)
+            && !cpu.is_halted()
+        {
+            self.do_interrupts(cpu);
+        }
+        self.apply_elapsed_cycles()
     }
 }
 
@@ -508,38 +599,98 @@ impl HeadlessSession {
             return Ok(self.step_outcome(Some(reason)));
         }
 
-        let settled = self.machine.execute_and_settle_instruction(&mut self.cpu);
-        if settled.instructions_after != settled.instructions_before.saturating_add(1) {
-            return Err(HeadlessRunError::InstructionAccountingInvariant {
-                before: settled.instructions_before,
-                after: settled.instructions_after,
-            });
-        }
-        if settled.instruction_cycles <= 0 {
-            return Err(HeadlessRunError::CycleAccountingInvariant {
-                pending: settled.instruction_cycles,
-            });
-        }
-        if settled.interrupt_cycles < 0 {
-            return Err(HeadlessRunError::CycleAccountingInvariant {
-                pending: settled.interrupt_cycles,
-            });
-        }
-        if settled.cycles_after < settled.cycles_before {
-            return Err(HeadlessRunError::CycleAccountingOverflow);
+        // `step` retains its original one-instruction behavior even if a
+        // caller switches to it immediately after observing a debug boundary.
+        if self.deferred_interrupt_after_debug {
+            self.deferred_interrupt_after_debug = false;
+            let cycles_before = self.machine.total_cycles_elapsed;
+            let interrupt_cycles = self.machine.settle_interrupt(&mut self.cpu);
+            self.validate_interrupt_settlement(cycles_before, interrupt_cycles)?;
+            let reason = self.capture_terminal_reason(self.machine.mem_out_of_bounds.get());
+            if reason.is_some() {
+                return Ok(self.step_outcome(reason));
+            }
         }
 
-        let reason = if let Some(address) = settled.memory_fault {
-            let reason = StopReason::MemoryFault {
-                address,
-                instruction_pc: self.machine.last_pc,
-            };
-            self.terminal_stop = Some(reason);
-            Some(reason)
-        } else {
-            self.terminal_reason()
-        };
+        let settled = self.machine.execute_and_settle_instruction(&mut self.cpu);
+        self.machine.io_unhandled.set(None);
+        self.validate_instruction_settlement(&settled)?;
+        let reason = self.capture_terminal_reason(settled.memory_fault);
         Ok(self.step_outcome(reason))
+    }
+
+    /// Advances to the next deterministic debugger-observation boundary.
+    ///
+    /// Ordinary instructions retain `step` semantics, including their
+    /// post-instruction interrupt check. A debugger-port `OUT` instead returns
+    /// at its successor PC before interrupt acceptance. If an interrupt is
+    /// pending, the next call exposes its handler-entry boundary without
+    /// executing a handler instruction; otherwise it advances normally and
+    /// does not manufacture a duplicate successor boundary.
+    pub fn advance_to_boundary(&mut self) -> Result<HeadlessBoundaryOutcome, HeadlessRunError> {
+        if let Some(reason) = self.terminal_reason() {
+            return Ok(
+                self.boundary_outcome(HeadlessBoundaryCause::SettledInstruction, Some(reason))
+            );
+        }
+
+        if let Some(outcome) = self.settle_deferred_interrupt()? {
+            return Ok(outcome);
+        }
+
+        let mut settled = self
+            .machine
+            .execute_and_settle_instruction_only(&mut self.cpu);
+        let debug_port = self
+            .machine
+            .io_unhandled
+            .replace(None)
+            .map(|address| (address & 0xff) as u8)
+            .filter(|port| (0x10..=0x2f).contains(port));
+        self.validate_instruction_settlement(&settled)?;
+        let mut reason = self.capture_terminal_reason(settled.memory_fault);
+
+        if let Some(port) = debug_port {
+            self.deferred_interrupt_after_debug = reason.is_none();
+            return Ok(self.boundary_outcome(HeadlessBoundaryCause::DebugPort(port), reason));
+        }
+
+        if reason.is_none() {
+            settled.interrupt_cycles = self.machine.settle_interrupt(&mut self.cpu);
+            settled.cycles_after = self.machine.total_cycles_elapsed;
+            settled.memory_fault = self.machine.mem_out_of_bounds.get();
+            self.validate_instruction_settlement(&settled)?;
+            reason = self.capture_terminal_reason(settled.memory_fault);
+        }
+        Ok(self.boundary_outcome(HeadlessBoundaryCause::SettledInstruction, reason))
+    }
+
+    /// Settles only the post-instruction interrupt check deferred by a
+    /// debugger-port boundary.
+    ///
+    /// This method never executes a guest instruction. It returns `Some` when
+    /// an interrupt is accepted (or settlement discovers a terminal reason),
+    /// and `None` when no deferred check exists or no interrupt is accepted.
+    /// A deferred check is consumed even when it accepts no interrupt.
+    pub fn settle_deferred_interrupt(
+        &mut self,
+    ) -> Result<Option<HeadlessBoundaryOutcome>, HeadlessRunError> {
+        if !self.deferred_interrupt_after_debug {
+            return Ok(None);
+        }
+
+        self.deferred_interrupt_after_debug = false;
+        let cycles_before = self.machine.total_cycles_elapsed;
+        let interrupt_cycles = self.machine.settle_interrupt(&mut self.cpu);
+        self.validate_interrupt_settlement(cycles_before, interrupt_cycles)?;
+        let reason = self.capture_terminal_reason(self.machine.mem_out_of_bounds.get());
+        if interrupt_cycles > 0 || reason.is_some() {
+            return Ok(Some(self.boundary_outcome(
+                HeadlessBoundaryCause::InterruptAccepted,
+                reason,
+            )));
+        }
+        Ok(None)
     }
 
     pub fn run(&mut self, limits: RunLimits) -> Result<HeadlessRunOutcome, HeadlessRunError> {
@@ -620,6 +771,22 @@ impl HeadlessSession {
             bytes.push(value);
         }
         Ok(HeadlessMemory { start, bytes })
+    }
+
+    /// Atomically writes a nonempty, mapped, writable, non-wrapping RAM
+    /// window without charging guest cycles or changing CPU state.
+    ///
+    /// The complete window is validated against the current machine mapping
+    /// before the first byte is changed.
+    pub fn write_memory(&mut self, start: u32, bytes: &[u8]) -> Result<(), HeadlessRunError> {
+        let targets = self.machine.validate_write_window(start, bytes.len())?;
+        for (value, target) in bytes.iter().copied().zip(targets) {
+            match target {
+                StorageAddress::Internal(address) => self.machine.mem_internal[address] = value,
+                StorageAddress::External(address) => self.machine.mem_external[address] = value,
+            }
+        }
+        Ok(())
     }
 
     pub fn read_active_stack(
@@ -742,8 +909,74 @@ impl HeadlessSession {
         }
     }
 
+    fn capture_terminal_reason(&mut self, memory_fault: Option<u32>) -> Option<StopReason> {
+        if let Some(address) = memory_fault {
+            let reason = StopReason::MemoryFault {
+                address,
+                instruction_pc: self.machine.last_pc,
+            };
+            self.terminal_stop = Some(reason);
+            Some(reason)
+        } else {
+            self.terminal_reason()
+        }
+    }
+
+    fn validate_instruction_settlement(
+        &self,
+        settled: &SettledInstruction,
+    ) -> Result<(), HeadlessRunError> {
+        if settled.instructions_after != settled.instructions_before.saturating_add(1) {
+            return Err(HeadlessRunError::InstructionAccountingInvariant {
+                before: settled.instructions_before,
+                after: settled.instructions_after,
+            });
+        }
+        if settled.instruction_cycles <= 0 {
+            return Err(HeadlessRunError::CycleAccountingInvariant {
+                pending: settled.instruction_cycles,
+            });
+        }
+        self.validate_interrupt_settlement(settled.cycles_before, settled.interrupt_cycles)?;
+        if settled.cycles_after < settled.cycles_before {
+            return Err(HeadlessRunError::CycleAccountingOverflow);
+        }
+        Ok(())
+    }
+
+    fn validate_interrupt_settlement(
+        &self,
+        cycles_before: u64,
+        interrupt_cycles: i32,
+    ) -> Result<(), HeadlessRunError> {
+        if interrupt_cycles < 0 {
+            return Err(HeadlessRunError::CycleAccountingInvariant {
+                pending: interrupt_cycles,
+            });
+        }
+        if self.machine.total_cycles_elapsed < cycles_before {
+            return Err(HeadlessRunError::CycleAccountingOverflow);
+        }
+        Ok(())
+    }
+
     fn step_outcome(&self, reason: Option<StopReason>) -> HeadlessStepOutcome {
         HeadlessStepOutcome {
+            reason,
+            guest_status: self.machine.guest_exit_status,
+            pc: self.pc(),
+            instructions: self.instructions_executed(),
+            cycles: self.total_cycles_elapsed(),
+        }
+    }
+
+    fn boundary_outcome(
+        &self,
+        cause: HeadlessBoundaryCause,
+        reason: Option<StopReason>,
+    ) -> HeadlessBoundaryOutcome {
+        HeadlessBoundaryOutcome {
+            cause,
             reason,
             guest_status: self.machine.guest_exit_status,
             pc: self.pc(),
@@ -879,6 +1112,162 @@ mod tests {
         assert_eq!(step.reason, None);
         assert_eq!(step.instructions, 1);
         assert!(step.cycles > 0);
+    }
+
+    #[test]
+    fn boundary_reports_only_debug_port_writes_without_duplicate_successors() {
+        let mut session = machine(false)
+            .begin_headless(HeadlessSessionConfig {
+                boot: HeadlessBoot::Direct(DirectEntry {
+                    pc: LOAD_ADDRESS,
+                    adl: true,
+                    madl: false,
+                    mbase: 0,
+                }),
+                images: vec![LoadImage {
+                    address: LOAD_ADDRESS,
+                    bytes: vec![
+                        0x3e, 0x55, // ld a,$55
+                        0xd3, 0x10, // out ($10),a
+                        0xd3, 0x20, // out ($20),a
+                        0xd3, 0x30, // out ($30),a
+                        0xdb, 0x10, // in a,($10)
+                    ],
+                }],
+            })
+            .unwrap();
+
+        assert_eq!(
+            session.advance_to_boundary().unwrap().cause,
+            HeadlessBoundaryCause::SettledInstruction
+        );
+        let event = session.advance_to_boundary().unwrap();
+        assert_eq!(event.cause, HeadlessBoundaryCause::DebugPort(0x10));
+        assert_eq!(event.pc, LOAD_ADDRESS + 4);
+        assert_eq!(event.instructions, 2);
+        assert_eq!(session.machine.io_unhandled.get(), None);
+
+        let before_settlement = session.snapshot();
+        assert_eq!(session.settle_deferred_interrupt().unwrap(), None);
+        let after_settlement = session.snapshot();
+        assert_eq!(after_settlement.pc, before_settlement.pc);
+        assert_eq!(
+            after_settlement.instructions,
+            before_settlement.instructions
+        );
+        assert_eq!(after_settlement.cycles, before_settlement.cycles);
+
+        let snapshot_event = session.advance_to_boundary().unwrap();
+        assert_eq!(snapshot_event.cause, HeadlessBoundaryCause::DebugPort(0x20));
+        assert_eq!(snapshot_event.pc, LOAD_ADDRESS + 6);
+        assert_eq!(snapshot_event.instructions, 3);
+
+        let ignored = session.advance_to_boundary().unwrap();
+        assert_eq!(ignored.cause, HeadlessBoundaryCause::SettledInstruction);
+        assert_eq!(session.machine.io_unhandled.get(), None);
+
+        let read = session.advance_to_boundary().unwrap();
+        assert_eq!(read.cause, HeadlessBoundaryCause::SettledInstruction);
+        assert_eq!(read.pc, LOAD_ADDRESS + 10);
+    }
+
+    #[test]
+    fn debug_boundary_precedes_pending_interrupt_and_handler_entry() {
+        let configured_session = || {
+            let mut session = machine(false)
+                .begin_headless(HeadlessSessionConfig {
+                    boot: HeadlessBoot::Direct(DirectEntry {
+                        pc: LOAD_ADDRESS,
+                        adl: true,
+                        madl: false,
+                        mbase: 0,
+                    }),
+                    images: vec![LoadImage {
+                        address: LOAD_ADDRESS,
+                        bytes: vec![0xd3, 0x10, 0x00],
+                    }],
+                })
+                .unwrap();
+            session.cpu.state.reg.iff1 = true;
+            session.cpu.state.reg.set24(Reg16::SP, 0x050100);
+            session.machine.uart0.ier = 0x02;
+            session.machine.mem_rom[0x18] = 0x34;
+            session.machine.mem_rom[0x19] = 0x12;
+            session
+        };
+
+        let mut session = configured_session();
+
+        let debug = session.advance_to_boundary().unwrap();
+        assert_eq!(debug.cause, HeadlessBoundaryCause::DebugPort(0x10));
+        assert_eq!(debug.pc, LOAD_ADDRESS + 2);
+        assert_eq!(debug.instructions, 1);
+
+        let interrupt = session.settle_deferred_interrupt().unwrap().unwrap();
+        assert_eq!(interrupt.cause, HeadlessBoundaryCause::InterruptAccepted);
+        assert_eq!(interrupt.pc, 0x001234);
+        assert_eq!(interrupt.instructions, 1);
+        assert!(interrupt.cycles > debug.cycles);
+
+        let mut delegated = configured_session();
+        delegated.advance_to_boundary().unwrap();
+        assert_eq!(
+            delegated.advance_to_boundary().unwrap().cause,
+            HeadlessBoundaryCause::InterruptAccepted
+        );
+    }
+
+    #[test]
+    fn headless_memory_write_is_atomic_and_cycle_neutral() {
+        let mut session = machine(false)
+            .begin_headless(HeadlessSessionConfig {
+                boot: HeadlessBoot::Direct(DirectEntry {
+                    pc: LOAD_ADDRESS,
+                    adl: true,
+                    madl: false,
+                    mbase: 0,
+                }),
+                images: vec![LoadImage {
+                    address: LOAD_ADDRESS,
+                    bytes: GUEST_42.to_vec(),
+                }],
+            })
+            .unwrap();
+
+        let before = session.snapshot();
+        let registers_before = format!("{:?}", before.registers);
+        session
+            .write_memory(LOAD_ADDRESS + 1, &[0x11, 0x22])
+            .unwrap();
+        assert_eq!(
+            session
+                .read_memory(LOAD_ADDRESS, NonZeroU32::new(4).unwrap())
+                .unwrap()
+                .bytes,
+            [0x3e, 0x11, 0x22, 0x00]
+        );
+        let after = session.snapshot();
+        assert_eq!(after.pc, before.pc);
+        assert_eq!(after.instructions, before.instructions);
+        assert_eq!(after.cycles, before.cycles);
+        assert_eq!(format!("{:?}", after.registers), registers_before);
+
+        let unchanged = session
+            .read_memory(LOAD_ADDRESS, NonZeroU32::new(4).unwrap())
+            .unwrap()
+            .bytes;
+        assert!(matches!(
+            session.write_memory(0x01ffff, &[0xaa, 0xbb]),
+            Err(HeadlessRunError::ReadOnlyAddress { .. })
+        ));
+        assert_eq!(
+            session
+                .read_memory(LOAD_ADDRESS, NonZeroU32::new(4).unwrap())
+                .unwrap()
+                .bytes,
+            unchanged
+        );
+        assert_eq!(session.snapshot().cycles, before.cycles);
     }
 
     #[test]

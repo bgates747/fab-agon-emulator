@@ -9,10 +9,10 @@ use std::sync::Arc;
 #[path = "headless.rs"]
 mod headless;
 pub use headless::{
-    ActiveStackKind, DirectEntry, HeadlessBoot, HeadlessInstruction, HeadlessMemory,
-    HeadlessObservationError, HeadlessRunConfig, HeadlessRunError, HeadlessRunOutcome,
-    HeadlessSession, HeadlessSessionConfig, HeadlessSnapshot, HeadlessStack, HeadlessStepOutcome,
-    LoadImage, RunLimits, StopReason,
+    ActiveStackKind, DirectEntry, HeadlessBoot, HeadlessBoundaryCause, HeadlessBoundaryOutcome,
+    HeadlessInstruction, HeadlessMemory, HeadlessObservationError, HeadlessRunConfig,
+    HeadlessRunError, HeadlessRunOutcome, HeadlessSession, HeadlessSessionConfig, HeadlessSnapshot,
+    HeadlessStack, HeadlessStepOutcome, LoadImage, RunLimits, StopReason,
 };
 
 const ROM_SIZE: usize = 0x20000; // 128 KiB flash

@@ -13,6 +13,8 @@ pub use agon_machine::AgonMachine;
 pub use agon_machine::AgonMachineConfig;
 pub use agon_machine::DirectEntry;
 pub use agon_machine::HeadlessBoot;
+pub use agon_machine::HeadlessBoundaryCause;
+pub use agon_machine::HeadlessBoundaryOutcome;
 pub use agon_machine::HeadlessInstruction;
 pub use agon_machine::HeadlessMemory;
 pub use agon_machine::HeadlessObservationError;
