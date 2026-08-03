@@ -9,8 +9,10 @@ use std::sync::Arc;
 #[path = "headless.rs"]
 mod headless;
 pub use headless::{
-    DirectEntry, HeadlessBoot, HeadlessRunConfig, HeadlessRunError, HeadlessRunOutcome,
-    HeadlessSession, HeadlessSessionConfig, HeadlessStepOutcome, LoadImage, RunLimits, StopReason,
+    ActiveStackKind, DirectEntry, HeadlessBoot, HeadlessInstruction, HeadlessMemory,
+    HeadlessObservationError, HeadlessRunConfig, HeadlessRunError, HeadlessRunOutcome,
+    HeadlessSession, HeadlessSessionConfig, HeadlessSnapshot, HeadlessStack, HeadlessStepOutcome,
+    LoadImage, RunLimits, StopReason,
 };
 
 const ROM_SIZE: usize = 0x20000; // 128 KiB flash
@@ -1645,9 +1647,19 @@ impl AgonMachine {
     }
 
     #[inline]
-    fn debugger_tick(&mut self, debugger: &mut Option<debugger::DebuggerServer>, cpu: &mut Cpu) {
-        if let Some(ref mut ds) = debugger {
-            ds.tick(self, cpu);
+    pub(crate) fn debugger_tick(
+        &mut self,
+        debugger: &mut Option<debugger::DebuggerServer>,
+        cpu: &mut Cpu,
+    ) {
+        let disconnected = match debugger.as_mut() {
+            Some(server) => server.tick(self, cpu).is_err(),
+            None => false,
+        };
+        if disconnected {
+            *debugger = None;
+            self.mem_out_of_bounds.set(None);
+            self.set_paused(false);
         }
     }
 
@@ -1677,10 +1689,16 @@ impl AgonMachine {
                 if self.is_paused() {
                     break;
                 }
-                self.execute_instruction(&mut cpu);
-                if self.cycle_counter.get() >= self.interrupt_precision {
-                    cycle += self.apply_elapsed_cycles() as u64;
-                    self.do_interrupts(&mut cpu);
+                if debugger.is_some() {
+                    let settled = self.execute_and_settle_instruction(&mut cpu);
+                    cycle = cycle
+                        .saturating_add(settled.cycles_after.saturating_sub(settled.cycles_before));
+                } else {
+                    self.execute_instruction(&mut cpu);
+                    if self.cycle_counter.get() >= self.interrupt_precision {
+                        cycle += self.apply_elapsed_cycles() as u64;
+                        self.do_interrupts(&mut cpu);
+                    }
                 }
             }
 
