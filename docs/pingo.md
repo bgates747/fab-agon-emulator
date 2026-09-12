@@ -261,6 +261,132 @@ metadata, and emulator logs. Failed runs retain their diagnostic directory
 automatically. These hashes validate Pingo's render target, not Fab's final
 composited scanout.
 
+### Silent performance benchmarks
+
+`benchmark-pingo.py` runs an instrumented Pingo fixture without opening a
+window or playing Fab's boot beep. It starts a fresh emulator process for each
+repeat and requires explicit paths so a stock VDP or the wrong simulated SD
+card cannot pass accidentally:
+
+```sh
+scripts/benchmark-pingo.py \
+  --emulator ~/Agon/mystuff/fab-agon-emulator/target/release/fab-agon-emulator \
+  --vdp ~/Agon/mystuff/agon-vdp/video/build/userspace/vdp_pingo.so \
+  --mos ~/Agon/mystuff/fab-agon-emulator/firmware/mos_console8.bin \
+  --sdcard ~/Agon/mystuff/pingoasm/emulators/tv-port-baseline/sdcard \
+  --expected-count 289 \
+  --expected-bmid 1410 \
+  --repeats 3 \
+  --artifact ~/Agon/mystuff/pingoasm/benchmarks/orbit-scene/fixtures/earth-party-camera-ellipse-rgba2222/effective-profile.json \
+  --output ~/Agon/mystuff/pingoasm/benchmarks/orbit-scene/results/camera-ellipse-emulator.json
+```
+
+For a chained `autoexec.txt`, replace `--expected-count` and
+`--expected-bmid` with one declaration for each independent bitmap stream.
+The current full-chain expectation is:
+
+```sh
+scripts/benchmark-pingo.py \
+  --emulator ~/Agon/mystuff/fab-agon-emulator/target/release/fab-agon-emulator \
+  --vdp ~/Agon/mystuff/agon-vdp/video/build/userspace/vdp_pingo.so \
+  --mos ~/Agon/mystuff/fab-agon-emulator/firmware/mos_console8.bin \
+  --sdcard ~/Agon/mystuff/pingoasm/emulators/tv-port-baseline/sdcard \
+  --expected-stream 1257:580 \
+  --expected-stream 1410:867 \
+  --repeats 3 \
+  --output /tmp/pingo-full-chain-emulator.json
+```
+
+The two expectation modes are mutually exclusive:
+
+1. `--expected-count N` retains the original single-fixture contract.
+   `autoexec.txt` must contain exactly one active `LOAD`, followed by one
+   active `RUN`. The complete record sequence must be `0..N-1`;
+   `--expected-bmid` may further constrain accepted bitmap IDs.
+2. Repeatable `--expected-stream BMID:COUNT` enables a chained suite.
+   `autoexec.txt` may contain multiple `LOAD`/`RUN` pairs, but every `LOAD`
+   must receive its `RUN` before the next `LOAD`. Each declared bitmap ID has
+   its own sequence beginning at zero and continuing without a gap or reset,
+   even when records from the declared streams are interleaved. Undeclared
+   bitmap IDs, missing records, excess records, and duplicate stream
+   declarations fail the run. The expected total is the sum of all declared
+   stream counts—1,447 records for the example.
+
+Every selected binary must exist. Lexical paths may not escape the SD root;
+the established project-local symlink from the simulated SD card into
+`pingoasm` remains supported. Every selected runtime directory is hashed and
+checked again before publication. The benchmark helper never edits
+`autoexec.txt`. The single-fixture example assumes the current ellipse
+fixture, whose profile declares 289 measured frames and target bitmap 1410.
+
+The native VDP must expose its forced diagnostics to the host. The Pingo
+firmware does this in `force_debug_log()` by writing to `stderr` under
+`USERSPACE`; its embedded build continues to use `DBGSerial`. Absence of that
+hook is a hard missing-record failure, not a silent empty result.
+
+Each `PINGO_RENDER` record must contain decimal `seq`, `bmid`, and
+`render_us` fields. It rejects gaps, duplicates, sequence resets, unexpected
+bitmap IDs, extra records, subprocess failures, timeouts, and benchmark
+inputs that change during the suite.
+
+Fab is pinned to dummy SDL video and audio drivers, the software renderer,
+zero-initialized RAM, and unlimited eZ80 execution (`-u`). Do not add
+`--verbose`; its output volume perturbs the run and obscures the measurement
+records. After the expected records and a short cleanup grace period, the
+helper uses Fab's debugger path to pause the eZ80 and request orderly VDP and
+emulator shutdown.
+
+The JSON report records the exact command and selected environment, host
+identity, repository state, SHA-256 identities for the benchmark harness and
+shared helpers, emulator, VDP, MOS, `autoexec.txt`, selected runtime directory,
+and optional profile artifacts. It includes every raw sample, per-run and
+aggregate statistics, per-stream summaries in chained mode, wall-clock
+intervals, and hashes of the adjacent raw emulator logs.
+
+Existing outputs are protected unless `--force` is supplied. Forced reruns
+stage every new log without touching the old evidence. Only after all runs and
+input-identity checks pass are the logs replaced and the new JSON report
+published last. If publication itself is interrupted, the old report is
+removed first so stale JSON cannot claim a mixture of old and new logs.
+
+These timings are suitable for relative regression work on the same quiet
+host. They are not substitutes for the ESP32 measurements: physical hardware
+remains the performance ground truth.
+
+### Benchmark maintenance handoff (2026-09-11)
+
+This checkpoint adds the benchmark CLI, its unit contracts, and the usage
+contract above as one change. It does not modify the Rust emulator, VDP source,
+firmware, or an installed runtime. The existing `pingo` branch also contains
+three previously local deterministic headless run, observation, and manifest
+checkpoint commits; publication retains that history without rewriting it.
+
+Validation: `python3 -m unittest discover -s tests -p 'test_*.py'` passes all
+43 benchmark/helper tests on Linux. No new real-emulator performance run,
+macOS benchmark validation, or physical ESP32 measurement was performed for
+this commit. The examples above are explicit fixture selections, not proof
+that those mutable paths still contain the matching instrumented deployment.
+
+For the next benchmark agent:
+
+1. Read `scripts/benchmark-pingo.py`, `scripts/pingo_helpers.py`, and
+   `tests/test_benchmark_pingo.py` before changing the record/report contract.
+2. Use an instrumented VDP that emits `PINGO_RENDER` on host stderr and verify
+   the exact fixture's LOAD/RUN chain and expected bitmap counts. This harness
+   does not add that instrumentation to ordinary VDP firmware or Pingo 2.
+3. Preserve strict sequence/count checks, post-run input identity validation,
+   and logs-first/report-last publication. The current runtime manifest hashes
+   immediate regular files in each selected program directory; it is not a
+   recursive inventory of every asset a program might load. Use `--artifact`
+   for additional known inputs.
+4. Failed runs publish no report; temporary staged logs are cleaned up by the
+   current implementation. Capture the command's diagnostics when investigating
+   failures. Existing published results survive failures before publication.
+5. Treat same-host timing as regression evidence. Keep native shutdown and
+   macOS compatibility validation separate, and retain human validation gates
+   for future runtime changes. Do not replace the official Mac runtime with
+   this user-owned source fork as part of source migration.
+
 ### Report exact state
 
 ```sh
